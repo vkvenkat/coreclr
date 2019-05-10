@@ -435,6 +435,8 @@ void c_write (uint32_t& place, uint32_t value)
     //place = value;
 }
 
+alloc_dynamic_data alloc_dd[MAX_SUPPORTED_CPUS] = {{0}};
+
 #ifndef DACCESS_COMPILE
 // If every heap's gen2 or gen3 size is less than this threshold we will do a blocking GC.
 const size_t bgc_min_per_heap = 4*1024*1024;
@@ -11652,6 +11654,12 @@ size_t gc_heap::new_allocation_limit (size_t size, size_t physical_limit, int ge
     size_t limit = min (logical_limit, (ptrdiff_t)physical_limit);
     assert (limit == Align (limit, get_alignment_constant (!(gen_number == (max_generation+1)))));
     dd_new_allocation (dd) = (new_alloc - limit);
+
+    if (gen_number == 0)
+    {
+        alloc_dd[heap_number].new_allocation = (new_alloc - limit);
+    }
+
     return limit;
 }
 
@@ -13477,7 +13485,7 @@ void gc_heap::balance_heaps (alloc_context* acontext)
             gc_heap* hp = acontext->get_home_heap()->pGenGCHeap;
             dprintf (3, ("First allocation for context %Ix on heap %d\n", (size_t)acontext, (size_t)hp->heap_number));
             acontext->set_alloc_heap(acontext->get_home_heap());
-            hp->alloc_context_count++;
+            alloc_dd[hp->heap_number].alloc_context_count++;
         }
     }
     else
@@ -13517,19 +13525,19 @@ void gc_heap::balance_heaps (alloc_context* acontext)
             {
                 gc_heap* org_hp = acontext->get_alloc_heap()->pGenGCHeap;
 
-                dynamic_data* dd = org_hp->dynamic_data_of (0);
-                ptrdiff_t org_size = dd_new_allocation (dd);
+                ptrdiff_t org_size = alloc_dd[org_hp->heap_number].new_allocation;
                 int org_alloc_context_count;
                 int max_alloc_context_count;
                 gc_heap* max_hp;
                 ptrdiff_t max_size;
-                size_t delta = dd_min_size (dd)/4;
+                size_t delta = alloc_dd[org_hp->heap_number].min_size/4;
 
                 int start, end, finish;
                 heap_select::get_heap_range_for_heap(org_hp->heap_number, &start, &end);
                 finish = start + n_heaps;
 
 try_again:
+                gc_heap* hp;
                 do
                 {
                     max_hp = org_hp;
@@ -13539,19 +13547,18 @@ try_again:
                     if (org_hp == acontext->get_home_heap()->pGenGCHeap)
                         max_size = max_size + delta;
 
-                    org_alloc_context_count = org_hp->alloc_context_count;
+                    org_alloc_context_count = alloc_dd[org_hp->heap_number].alloc_context_count;
                     max_alloc_context_count = org_alloc_context_count;
                     if (max_alloc_context_count > 1)
                         max_size /= max_alloc_context_count;
 
                     for (int i = start; i < end; i++)
                     {
-                        gc_heap* hp = GCHeap::GetHeap(i%n_heaps)->pGenGCHeap;
-                        dd = hp->dynamic_data_of (0);
-                        ptrdiff_t size = dd_new_allocation (dd);
+                        hp = g_heaps[i%n_heaps];
+                        ptrdiff_t size = alloc_dd[hp->heap_number].new_allocation;
                         if (hp == acontext->get_home_heap()->pGenGCHeap)
                             size = size + delta;
-                        int hp_alloc_context_count = hp->alloc_context_count;
+                        int hp_alloc_context_count = alloc_dd[hp->heap_number].alloc_context_count;
                         if (hp_alloc_context_count > 0)
                             size /= (hp_alloc_context_count + 1);
                         if (size > max_size)
@@ -13562,20 +13569,20 @@ try_again:
                         }
                     }
                 }
-                while (org_alloc_context_count != org_hp->alloc_context_count ||
-                       max_alloc_context_count != max_hp->alloc_context_count);
+                while (org_alloc_context_count != alloc_dd[org_hp->heap_number].alloc_context_count ||
+                       max_alloc_context_count != alloc_dd[max_hp->heap_number].alloc_context_count);
 
                 if ((max_hp == org_hp) && (end < finish))
                 {   
                     start = end; end = finish; 
-                    delta = dd_min_size(dd)/2; // Make it twice as hard to balance to remote nodes on NUMA.
+                    delta = alloc_dd[hp->heap_number].min_size/2; // Make it twice as hard to balance to remote nodes on NUMA.
                     goto try_again;
                 }
 
                 if (max_hp != org_hp)
                 {
-                    org_hp->alloc_context_count--;
-                    max_hp->alloc_context_count++;
+                    alloc_dd[org_hp->heap_number].alloc_context_count--;
+                    alloc_dd[max_hp->heap_number].alloc_context_count++;
                     acontext->set_alloc_heap(GCHeap::GetHeap(max_hp->heap_number));
                     if (!gc_thread_no_affinitize_p)
                     {
@@ -16129,6 +16136,7 @@ void gc_heap::gc1()
 
                     if (gen == 0)
                     {
+                        alloc_dd[i].new_allocation = desired_per_heap;
                         hp->fgn_last_alloc = desired_per_heap;
                     }
                 }
@@ -16192,6 +16200,7 @@ void gc_heap::save_data_for_no_gc()
     {
         current_no_gc_region_info.saved_gen0_min_size = dd_min_size (g_heaps[i]->dynamic_data_of (0));
         dd_min_size (g_heaps[i]->dynamic_data_of (0)) = min_balance_threshold;
+        alloc_dd[i].min_size = min_balance_threshold;
         current_no_gc_region_info.saved_gen3_min_size = dd_min_size (g_heaps[i]->dynamic_data_of (max_generation + 1));
         dd_min_size (g_heaps[i]->dynamic_data_of (max_generation + 1)) = 0;
     }
@@ -16205,6 +16214,7 @@ void gc_heap::restore_data_for_no_gc()
     for (int i = 0; i < n_heaps; i++)
     {
         dd_min_size (g_heaps[i]->dynamic_data_of (0)) = current_no_gc_region_info.saved_gen0_min_size;
+        alloc_dd[i].min_size = current_no_gc_region_info.saved_gen0_min_size;
         dd_min_size (g_heaps[i]->dynamic_data_of (max_generation + 1)) = current_no_gc_region_info.saved_gen3_min_size;
     }
 #endif //MULTIPLE_HEAPS
@@ -16468,6 +16478,7 @@ void gc_heap::set_soh_allocations_for_no_gc()
     {
         dynamic_data* dd = dynamic_data_of (0);
         dd_new_allocation (dd) = soh_allocation_no_gc;
+        alloc_dd[heap_number].new_allocation = soh_allocation_no_gc;
         dd_gc_new_allocation (dd) = dd_new_allocation (dd);
 #ifdef MULTIPLE_HEAPS
         alloc_context_count = 0;
@@ -30025,6 +30036,11 @@ void gc_heap::set_static_data()
         dd->sdata = sdata;
         dd->min_size = sdata->min_size;
 
+        if (i == 0)
+        {
+            alloc_dd[heap_number].min_size = sdata->min_size;
+        }
+
         dprintf (GTC_LOG, ("PM: %d, gen%d:  min: %Id, max: %Id, fr_l: %Id, fr_b: %d%%",
             settings.pause_mode,i, 
             dd->min_size, dd_max_size (dd), 
@@ -30102,6 +30118,12 @@ bool gc_heap::init_dynamic_data()
         dd->promoted_size = 0;
         dd->collection_count = 0;
         dd->new_allocation = dd->min_size;
+
+        if (i == 0)
+        {
+            alloc_dd[heap_number].new_allocation = dd->min_size;
+        }
+
         dd->gc_new_allocation = dd->new_allocation;
         dd->desired_allocation = dd->new_allocation;
         dd->fragmentation = 0;
@@ -30407,6 +30429,11 @@ size_t  gc_heap::compute_in (int gen_number)
     dd_gc_new_allocation (dd) -= in;
     dd_new_allocation (dd) = dd_gc_new_allocation (dd);
 
+    if (gen_number == 0)
+    {
+        alloc_dd[heap_number].new_allocation = dd_gc_new_allocation (dd);
+    }
+
     gc_history_per_heap* current_gc_data_per_heap = get_gc_data_per_heap();
     gc_generation_data* gen_data = &(current_gc_data_per_heap->gen_data[gen_number]);
     gen_data->in = in;
@@ -30580,6 +30607,11 @@ void gc_heap::compute_new_dynamic_data (int gen_number)
 
     dd_gc_new_allocation (dd) = dd_desired_allocation (dd);
     dd_new_allocation (dd) = dd_gc_new_allocation (dd);
+    
+    if (gen_number == 0)
+    {
+        alloc_dd[heap_number].new_allocation = dd_gc_new_allocation (dd);
+    }
 
     //update counter
     dd_promoted_size (dd) = out;

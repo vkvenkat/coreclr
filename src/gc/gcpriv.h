@@ -894,6 +894,13 @@ struct etw_opt_info
     int    gen_number;
 };
 
+struct alloc_dynamic_data
+{
+    VOLATILE(int) alloc_context_count;
+    ptrdiff_t new_allocation;
+    size_t min_size;
+};
+
 // Note, I am not removing the ones that are no longer used
 // because the older versions of the runtime still use them
 // and ETW interprets them.
