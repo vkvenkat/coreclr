@@ -16164,7 +16164,7 @@ void gc_heap::gc1()
 
             gc_t_join.restart();
         }
-        alloc_context_count = 0;
+        alloc_dd[heap_number].alloc_context_count = 0;
         heap_select::mark_heap (heap_number);
     }
 
@@ -16481,7 +16481,7 @@ void gc_heap::set_soh_allocations_for_no_gc()
         alloc_dd[heap_number].new_allocation = soh_allocation_no_gc;
         dd_gc_new_allocation (dd) = dd_new_allocation (dd);
 #ifdef MULTIPLE_HEAPS
-        alloc_context_count = 0;
+        alloc_dd[heap_number].alloc_context_count = 0;
 #endif //MULTIPLE_HEAPS
     }
 }
