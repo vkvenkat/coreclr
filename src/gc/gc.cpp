@@ -13552,13 +13552,16 @@ try_again:
                     if (max_alloc_context_count > 1)
                         max_size /= max_alloc_context_count;
 
-                    for (int i = start; i < end; i++)
+                    int actual_start = start % n_heaps;
+                    int actual_end = (end - 1) % n_heaps;
+
+                    for (int i = actual_start; i <= actual_end; i++)
                     {
-                        hp = g_heaps[i%n_heaps];
-                        ptrdiff_t size = alloc_dd[hp->heap_number].new_allocation;
+                        hp = g_heaps[i];
+                        ptrdiff_t size = alloc_dd[i].new_allocation;
                         if (hp == acontext->get_home_heap()->pGenGCHeap)
                             size = size + delta;
-                        int hp_alloc_context_count = alloc_dd[hp->heap_number].alloc_context_count;
+                        int hp_alloc_context_count = alloc_dd[i].alloc_context_count;
                         if (hp_alloc_context_count > 0)
                             size /= (hp_alloc_context_count + 1);
                         if (size > max_size)
